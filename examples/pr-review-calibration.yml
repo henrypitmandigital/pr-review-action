@@ -1,0 +1,44 @@
+# .github/workflows/pr-review-calibration.yml (optional)
+name: Reviewer calibration
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [plan, calibrate]
+        default: plan
+      budget_usd:
+        description: Explicit one-off ceiling for calibrate; zero prevents paid calibration
+        type: string
+        default: '0'
+      midrange:
+        description: Catalog model id from a second coding-model family
+        type: string
+      economical:
+        description: Catalog model id from a third family
+        type: string
+
+permissions: {}
+concurrency:
+  group: pr-review-policy-renewal
+  cancel-in-progress: false
+
+jobs:
+  calibrate:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    steps:
+      - uses: OWNER/pr-review/calibrate@v1
+        with:
+          mode: ${{ inputs.mode }}
+          budget-usd: ${{ inputs.budget_usd }}
+          midrange: ${{ inputs.midrange }}
+          economical: ${{ inputs.economical }}
+          openrouter-api-key: ${{ inputs.mode == 'calibrate' && secrets.OPENROUTER_API_KEY || '' }}
+          typesafe-api-key: ${{ inputs.mode == 'calibrate' && secrets.TYPESAFE_API_KEY || '' }}
+          # Empty uses config.json max_call_usd; a value can only lower it.
+          max-call-usd: ${{ vars.PR_REVIEW_MAX_CALL_USD }}

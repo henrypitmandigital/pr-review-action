@@ -1,0 +1,170 @@
+name: PR-review reviewer renewal
+description: >-
+  Fortnightly research of a cheaper qualified reviewer. Call daily from a
+  `schedule` workflow on the default branch with `contents: write`; it claims
+  at most one paid cycle per fourteen days. Write-permitted `workflow_dispatch`
+  and exact `/review-policy` or `/review-policy-resume <run id>` PR comments
+  can also request it (`actions: read` for resuming).
+inputs:
+  openrouter-api-key:
+    description: OpenRouter API key.
+    required: true
+  typesafe-api-key:
+    description: TypeSafe API key for candidate research and grading.
+    required: true
+  github-token:
+    description: Token with contents:write for the reviewer data branch.
+    default: ${{ github.token }}
+  config-dir:
+    description: Directory holding config.json and fixtures/, read from the trusted event commit.
+    default: .github/pr-review
+  max-call-usd:
+    description: Optional lower per-call ceiling (for example a repository variable).
+    default: ''
+  resume-run-id:
+    description: >-
+      Dispatch input: resume the cycle claimed by this run id after its trusted
+      run failed before inference. Needs `actions: read`. A PR comment of
+      `/review-policy-resume <run id>` does the same.
+    default: ''
+  authorize-only:
+    description: >-
+      Only authorise the trigger, then stop. Use in a secret-free job before an
+      approval-gated environment job, which calls the action again in full.
+    default: 'false'
+  package-manager:
+    description: '`npm` or `pnpm` (pnpm must already be on PATH) for the temporary SDK install.'
+    default: npm
+outputs:
+  allowed:
+    description: Whether the trigger is authorised.
+    value: ${{ steps.authorize.outputs.allowed }}
+runs:
+  using: composite
+  steps:
+    # Dispatches must also use trusted default-branch config.
+    # Schedule, a write-permitted dispatcher, or an exact write-permitted
+    # /review-policy[-resume <id>] PR comment; always on the default branch.
+    - name: Authorise the renewal trigger
+      id: authorize
+      uses: actions/github-script@v8
+      env:
+        PR_REVIEW_LIB: ${{ github.action_path }}/../lib
+        RESUME_INPUT: ${{ inputs.resume-run-id }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+          const lib = (f) => pathToFileURL(path.join(process.env.PR_REVIEW_LIB, f)).href;
+          const branch = context.payload.repository?.default_branch ??
+            (await github.rest.repos.get(context.repo)).data.default_branch;
+          if (context.ref !== `refs/heads/${branch}`) {
+            core.setOutput('allowed', 'false');
+            return core.setFailed('Reviewer renewal runs only on the default branch.');
+          }
+          const { authorizeRenewal } = await import(lib('authorize.mjs'));
+          await authorizeRenewal({ context, github, core, resumeInput: process.env.RESUME_INPUT });
+
+    - name: Checkout trusted repository config
+      if: steps.authorize.outputs.allowed == 'true' && inputs.authorize-only != 'true'
+      uses: actions/checkout@v5
+      with:
+        ref: ${{ github.sha }}
+        path: .pr-review/trusted
+        persist-credentials: false
+        sparse-checkout: ${{ inputs.config-dir }}
+        sparse-checkout-cone-mode: false
+
+    - name: Claim renewal if fourteen days have elapsed
+      id: claim
+      if: steps.authorize.outputs.allowed == 'true' && inputs.authorize-only != 'true'
+      uses: actions/github-script@v8
+      env:
+        RESUME_RUN_ID: ${{ steps.authorize.outputs.resume_run_id }}
+        PR_REVIEW_LIB: ${{ github.action_path }}/../lib
+        PR_REVIEW_CONFIG: .pr-review/trusted/${{ inputs.config-dir }}/config.json
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+          const lib = (f) => pathToFileURL(path.join(process.env.PR_REVIEW_LIB, f)).href;
+          const { beginRenewal } = await import(lib('renew-policy.mjs'));
+          const { SOURCE_SHA, EVAL_IMAGE, TYPESAFE_SDK } = await import(lib('gate.mjs'));
+          core.setOutput('source_sha', SOURCE_SHA);
+          core.setOutput('image', EVAL_IMAGE);
+          core.setOutput('sdk', TYPESAFE_SDK);
+          await beginRenewal({ github, context, core, resumeRunId: process.env.RESUME_RUN_ID });
+
+    - name: Checkout pinned official PR-Agent source
+      if: steps.claim.outputs.due == 'true' && steps.claim.outputs.evaluation_ready == 'true'
+      uses: actions/checkout@v5
+      with:
+        repository: The-PR-Agent/pr-agent
+        ref: ${{ steps.claim.outputs.source_sha }}
+        path: .pr-review/pr-agent
+        persist-credentials: false
+
+    - name: Prepare PR-Agent runtime and official TypeSafe SDK
+      if: steps.claim.outputs.due == 'true'
+      shell: bash
+      env:
+        SDK_DIRECTORY: ${{ runner.temp }}/typesafe-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+        SDK: ${{ steps.claim.outputs.sdk }}
+        EVAL_IMAGE: ${{ steps.claim.outputs.image }}
+        SOURCE: ${{ github.workspace }}/.pr-review/pr-agent
+        EVALUATION_READY: ${{ steps.claim.outputs.evaluation_ready }}
+        PACKAGE_MANAGER: ${{ inputs.package-manager }}
+      run: |
+        # Installed outside the repository; no lifecycle scripts run.
+        mkdir -p "$SDK_DIRECTORY"
+        case "$PACKAGE_MANAGER" in
+          npm) npm install --prefix "$SDK_DIRECTORY" --ignore-scripts --no-audit --no-fund --package-lock=false "$SDK" ;;
+          pnpm) pnpm --dir "$SDK_DIRECTORY" add --ignore-scripts "$SDK" ;;
+          *) echo "::error::package-manager must be npm or pnpm"; exit 1 ;;
+        esac
+        if [ "$EVALUATION_READY" = 'true' ]; then
+          docker pull "$EVAL_IMAGE"
+          # No keys for this preflight. Source is the pinned v0.46.0 package;
+          # image dependencies are digest-recorded and must support that source.
+          docker run --rm -v "$SOURCE:/opt/pr-agent:ro" -e PYTHONPATH=/opt/pr-agent --entrypoint python "$EVAL_IMAGE" -c 'from pr_agent.algo.ai_handlers.litellm_ai_handler import MODEL_RETRIES; assert MODEL_RETRIES <= 2'
+          docker run --rm -v "$SOURCE:/opt/pr-agent:ro" -e PYTHONPATH=/opt/pr-agent --entrypoint python "$EVAL_IMAGE" -m pr_agent.cli --help
+        fi
+
+    - name: Research, evaluate and publish the period's reviewer
+      if: steps.claim.outputs.due == 'true'
+      uses: actions/github-script@v8
+      env:
+        PR_REVIEW_LIB: ${{ github.action_path }}/../lib
+        PR_REVIEW_CONFIG: .pr-review/trusted/${{ inputs.config-dir }}/config.json
+        PR_REVIEW_MAX_CALL_USD: ${{ inputs.max-call-usd }}
+        PR_REVIEW_OUTPUT_DIR: ${{ runner.temp }}/research-output-${{ github.run_id }}
+        PR_AGENT_SOURCE_DIR: ${{ github.workspace }}/.pr-review/pr-agent
+        PR_AGENT_EVAL_IMAGE: ${{ steps.claim.outputs.image }}
+        SDK_DIRECTORY: ${{ runner.temp }}/typesafe-sdk-${{ github.run_id }}-${{ github.run_attempt }}
+        TYPESAFE_API_KEY: ${{ inputs.typesafe-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+          const lib = (f) => pathToFileURL(path.join(process.env.PR_REVIEW_LIB, f)).href;
+          const { loadTypeSafe } = await import(lib('typesafe.mjs'));
+          const { renewPolicy } = await import(lib('renew-policy.mjs'));
+          const { failureReason } = await import(lib('model-catalog.mjs'));
+          try {
+            await renewPolicy({ github, context, core, sdk: loadTypeSafe() });
+          } catch (error) {
+            core.setFailed(`${failureReason(error)} Previous policy was not replaced; this cycle remains claimed to prevent duplicate spend.`);
+          }
+
+    - name: Preserve research evidence
+      if: always() && steps.claim.outputs.due == 'true'
+      uses: actions/upload-artifact@v6
+      with:
+        name: reviewer-research-${{ github.run_id }}
+        path: ${{ runner.temp }}/research-output-${{ github.run_id }}/
+        if-no-files-found: ignore
+        retention-days: 90

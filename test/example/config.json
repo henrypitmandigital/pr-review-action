@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "repository": "example-org/example-repo",
+  "max_call_usd": 0.2,
+  "baseline": {
+    "model": "deepseek/deepseek-v4.1-flash",
+    "created": 1789021285,
+    "input_tokens": 512000,
+    "estimated_call_usd": 0.1634304,
+    "max_call_usd": 0.17,
+    "reasoning": "off"
+  },
+  "challenger": {
+    "max_call_usd": 0.010112,
+    "input_tokens": 32000,
+    "output_tokens": 8192,
+    "reasoning_tokens": 2048
+  }
+}

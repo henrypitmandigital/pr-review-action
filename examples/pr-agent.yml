@@ -1,0 +1,29 @@
+# .github/workflows/pr-agent.yml
+name: Manual PR-Agent review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  review:
+    # Cheap pre-filter only. The action admits just the first run attempt of an
+    # exact /review (optionally followed by the Claude Code footer) from the
+    # original human author with write, maintain or admin permission.
+    if: >-
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/review') &&
+      github.event.comment.user.type == 'User'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: OWNER/pr-review/review@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          # Empty uses config.json max_call_usd; a value can only lower it.
+          max-call-usd: ${{ vars.PR_REVIEW_MAX_CALL_USD }}

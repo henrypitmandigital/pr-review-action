@@ -1,0 +1,161 @@
+name: PR-review reviewer calibration
+description: >-
+  Owner-dispatched calibration. `plan` lists current candidates and prices with
+  no paid calls; `calibrate` evaluates the price reference plus two production
+  families on the repository suite within an explicit budget and records the
+  evidence. It never replaces the reviewer policy. Call from a
+  `workflow_dispatch` workflow on the default branch with `contents: write`.
+inputs:
+  mode:
+    description: '`plan` (free) or `calibrate` (paid, needs budget-usd).'
+    default: plan
+  budget-usd:
+    description: Explicit one-off ceiling for `calibrate`, at most 10.
+    default: '0'
+  midrange:
+    description: Catalog model id from a second coding-model family.
+    default: ''
+  economical:
+    description: Catalog model id from a third family.
+    default: ''
+  openrouter-api-key:
+    description: OpenRouter API key (calibrate only).
+    default: ''
+  typesafe-api-key:
+    description: TypeSafe API key (calibrate only).
+    default: ''
+  github-token:
+    description: Token with contents:write for the reviewer data branch.
+    default: ${{ github.token }}
+  config-dir:
+    description: Directory holding config.json and fixtures/, read from the trusted event commit.
+    default: .github/pr-review
+  max-call-usd:
+    description: Optional lower per-call ceiling (for example a repository variable).
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Require the default branch and a write-permitted dispatcher
+      uses: actions/github-script@v8
+      env:
+        MODE: ${{ inputs.mode }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          if (!['plan', 'calibrate'].includes(process.env.MODE))
+            return core.setFailed('mode must be plan or calibrate.');
+          const branch = context.payload.repository?.default_branch ??
+            (await github.rest.repos.get(context.repo)).data.default_branch;
+          if (context.ref !== `refs/heads/${branch}`)
+            return core.setFailed('Calibration runs only on the default branch.');
+          const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+            ...context.repo, username: context.actor,
+          });
+          if (!['write', 'maintain', 'admin'].includes(data.permission))
+            core.setFailed('Calibration requires repository write permission.');
+
+    - name: Checkout trusted repository config
+      uses: actions/checkout@v5
+      with:
+        ref: ${{ github.sha }}
+        path: .pr-review/trusted
+        persist-credentials: false
+        sparse-checkout: ${{ inputs.config-dir }}
+        sparse-checkout-cone-mode: false
+
+    - name: Free catalog plan
+      if: inputs.mode == 'plan'
+      uses: actions/github-script@v8
+      env:
+        PR_REVIEW_LIB: ${{ github.action_path }}/../lib
+        PR_REVIEW_CONFIG: .pr-review/trusted/${{ inputs.config-dir }}/config.json
+        PR_REVIEW_MAX_CALL_USD: ${{ inputs.max-call-usd }}
+        PR_REVIEW_OUTPUT_DIR: ${{ runner.temp }}/research-output-${{ github.run_id }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+          const lib = (f) => pathToFileURL(path.join(process.env.PR_REVIEW_LIB, f)).href;
+          const { calibrationPlan } = await import(lib('calibrate.mjs'));
+          await calibrationPlan({ github, context, core });
+
+    - name: Pinned runtime versions
+      id: pins
+      if: inputs.mode == 'calibrate'
+      shell: bash
+      working-directory: ${{ github.action_path }}/../lib
+      env:
+        PR_REVIEW_CONFIG: ${{ github.workspace }}/.pr-review/trusted/${{ inputs.config-dir }}/config.json
+      run: |
+        node --input-type=module -e '
+          const { SOURCE_SHA, EVAL_IMAGE, TYPESAFE_SDK } = await import("./gate.mjs");
+          console.log(`source_sha=${SOURCE_SHA}\nimage=${EVAL_IMAGE}\nsdk=${TYPESAFE_SDK}`);
+        ' >> "$GITHUB_OUTPUT"
+
+    - name: Checkout pinned official PR-Agent source
+      if: inputs.mode == 'calibrate'
+      uses: actions/checkout@v5
+      with:
+        repository: The-PR-Agent/pr-agent
+        ref: ${{ steps.pins.outputs.source_sha }}
+        path: .pr-review/pr-agent
+        persist-credentials: false
+
+    - name: Prepare PR-Agent runtime and official TypeSafe SDK
+      if: inputs.mode == 'calibrate'
+      shell: bash
+      env:
+        SDK_DIRECTORY: ${{ runner.temp }}/typesafe-sdk-${{ github.run_id }}
+        SDK: ${{ steps.pins.outputs.sdk }}
+        EVAL_IMAGE: ${{ steps.pins.outputs.image }}
+        SOURCE: ${{ github.workspace }}/.pr-review/pr-agent
+      run: |
+        npm install --prefix "$SDK_DIRECTORY" --ignore-scripts --no-audit --no-fund --package-lock=false "$SDK"
+        docker pull "$EVAL_IMAGE"
+        docker run --rm -v "$SOURCE:/opt/pr-agent:ro" -e PYTHONPATH=/opt/pr-agent --entrypoint python "$EVAL_IMAGE" -c 'from pr_agent.algo.ai_handlers.litellm_ai_handler import MODEL_RETRIES; assert MODEL_RETRIES <= 2'
+
+    - name: Execute the explicitly budgeted calibration
+      if: inputs.mode == 'calibrate'
+      uses: actions/github-script@v8
+      env:
+        PR_REVIEW_LIB: ${{ github.action_path }}/../lib
+        PR_REVIEW_CONFIG: .pr-review/trusted/${{ inputs.config-dir }}/config.json
+        PR_REVIEW_MAX_CALL_USD: ${{ inputs.max-call-usd }}
+        PR_REVIEW_OUTPUT_DIR: ${{ runner.temp }}/research-output-${{ github.run_id }}
+        PR_AGENT_SOURCE_DIR: ${{ github.workspace }}/.pr-review/pr-agent
+        PR_AGENT_EVAL_IMAGE: ${{ steps.pins.outputs.image }}
+        SDK_DIRECTORY: ${{ runner.temp }}/typesafe-sdk-${{ github.run_id }}
+        TYPESAFE_API_KEY: ${{ inputs.typesafe-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        BUDGET_USD: ${{ inputs.budget-usd }}
+        MIDRANGE: ${{ inputs.midrange }}
+        ECONOMICAL: ${{ inputs.economical }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+          const lib = (f) => pathToFileURL(path.join(process.env.PR_REVIEW_LIB, f)).href;
+          const { loadTypeSafe } = await import(lib('typesafe.mjs'));
+          const { calibrate } = await import(lib('calibrate.mjs'));
+          const { failureReason, PRICE_REFERENCE } = await import(lib('model-catalog.mjs'));
+          try {
+            await calibrate({
+              github, context, core, sdk: loadTypeSafe(),
+              budgetUsd: Number(process.env.BUDGET_USD),
+              roleIds: [PRICE_REFERENCE, process.env.MIDRANGE, process.env.ECONOMICAL],
+            });
+          } catch (error) {
+            core.setFailed(failureReason(error));
+          }
+
+    - name: Preserve calibration evidence
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: reviewer-calibration-${{ github.run_id }}
+        path: ${{ runner.temp }}/research-output-${{ github.run_id }}/
+        if-no-files-found: ignore
+        retention-days: 90

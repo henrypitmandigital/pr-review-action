@@ -1,0 +1,101 @@
+[
+  {
+    "id": "path-traversal",
+    "pr": "https://github.com/example-org/example-repo/pull/101",
+    "buggy_sha": "deadbeefdeadbeefdeadbeefdeadbeef00000101",
+    "repair_sha": "feedfacefeedfacefeedfacefeedface00000101",
+    "expected": "serveStatic joins a decoded request path onto root without confining it, so /assets/../../etc/passwd reads files outside the public directory. Resolve the path and reject anything that escapes root.",
+    "adjudication_notes": [
+      "Synthetic example PR for the test suite; the SHAs and PR URL are placeholders.",
+      "Both files are supplied in full, including the caller that exposes the defect."
+    ],
+    "buggy_diff": "diff --git a/src/http/serve-static.ts b/src/http/serve-static.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/http/serve-static.ts\n@@ -0,0 +1,6 @@\n+import { join } from \"node:path\";\n+import { readFile } from \"node:fs/promises\";\n+export async function serveStatic(root: string, requestPath: string) {\n+  const file = join(root, decodeURIComponent(requestPath));\n+  return readFile(file);\n+}\ndiff --git a/src/http/assets-route.ts b/src/http/assets-route.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/http/assets-route.ts\n@@ -0,0 +1,4 @@\n+import { serveStatic } from \"./serve-static\";\n+export function assetsHandler(url: URL) {\n+  return serveStatic(\"/srv/app/public\", url.pathname.replace(/^\\/assets/, \"\"));\n+}\n",
+    "fixed_diff": "diff --git a/src/http/serve-static.ts b/src/http/serve-static.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/http/serve-static.ts\n@@ -0,0 +1,8 @@\n+import { resolve, sep } from \"node:path\";\n+import { readFile } from \"node:fs/promises\";\n+export async function serveStatic(root: string, requestPath: string) {\n+  const base = resolve(root);\n+  const file = resolve(base, \".\" + decodeURIComponent(requestPath));\n+  if (file !== base && !file.startsWith(base + sep)) throw new Error(\"Path outside root\");\n+  return readFile(file);\n+}\ndiff --git a/src/http/assets-route.ts b/src/http/assets-route.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/http/assets-route.ts\n@@ -0,0 +1,4 @@\n+import { serveStatic } from \"./serve-static\";\n+export function assetsHandler(url: URL) {\n+  return serveStatic(\"/srv/app/public\", url.pathname.replace(/^\\/assets/, \"\"));\n+}\n",
+    "buggy_judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "A request path containing ../ segments reaches readFile outside the configured root."
+          }
+        ]
+      },
+      "claims": "supported"
+    },
+    "fixed_judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "A request path containing ../ segments reaches readFile outside the configured root."
+          }
+        ]
+      },
+      "claims": "unsupported"
+    }
+  },
+  {
+    "id": "pagination-cursor",
+    "pr": "https://github.com/example-org/example-repo/pull/102",
+    "buggy_sha": "deadbeefdeadbeefdeadbeefdeadbeef00000102",
+    "repair_sha": "feedfacefeedfacefeedfacefeedface00000102",
+    "expected": "paginate starts each page at cursor + 1, so the first item and every item at a page boundary are skipped by everyItem. Slice from cursor itself.",
+    "adjudication_notes": [
+      "Synthetic example PR for the test suite; the SHAs and PR URL are placeholders.",
+      "Both files are supplied in full, including the caller that exposes the defect."
+    ],
+    "buggy_diff": "diff --git a/src/list/paginate.ts b/src/list/paginate.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/list/paginate.ts\n@@ -0,0 +1,6 @@\n+export type Page<T> = { items: T[]; next: number | null };\n+export function paginate<T>(all: T[], cursor: number, size: number): Page<T> {\n+  const items = all.slice(cursor + 1, cursor + 1 + size);\n+  const end = cursor + 1 + size;\n+  return { items, next: end < all.length ? end : null };\n+}\ndiff --git a/src/list/every-item.ts b/src/list/every-item.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/list/every-item.ts\n@@ -0,0 +1,9 @@\n+import { paginate } from \"./paginate\";\n+export function* everyItem<T>(all: T[], size: number) {\n+  let cursor: number | null = 0;\n+  while (cursor !== null) {\n+    const page = paginate(all, cursor, size);\n+    yield* page.items;\n+    cursor = page.next;\n+  }\n+}\n",
+    "fixed_diff": "diff --git a/src/list/paginate.ts b/src/list/paginate.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/list/paginate.ts\n@@ -0,0 +1,6 @@\n+export type Page<T> = { items: T[]; next: number | null };\n+export function paginate<T>(all: T[], cursor: number, size: number): Page<T> {\n+  const items = all.slice(cursor, cursor + size);\n+  const end = cursor + size;\n+  return { items, next: end < all.length ? end : null };\n+}\ndiff --git a/src/list/every-item.ts b/src/list/every-item.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/list/every-item.ts\n@@ -0,0 +1,9 @@\n+import { paginate } from \"./paginate\";\n+export function* everyItem<T>(all: T[], size: number) {\n+  let cursor: number | null = 0;\n+  while (cursor !== null) {\n+    const page = paginate(all, cursor, size);\n+    yield* page.items;\n+    cursor = page.next;\n+  }\n+}\n",
+    "buggy_judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "Iterating every page with everyItem drops the first element and one element at each page boundary."
+          }
+        ]
+      },
+      "claims": "supported"
+    },
+    "fixed_judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "Iterating every page with everyItem drops the first element and one element at each page boundary."
+          }
+        ]
+      },
+      "claims": "unsupported"
+    }
+  },
+  {
+    "id": "rate-limit-window",
+    "pr": "https://github.com/example-org/example-repo/pull/103",
+    "buggy_sha": "deadbeefdeadbeefdeadbeefdeadbeef00000103",
+    "repair_sha": "feedfacefeedfacefeedfacefeedface00000103",
+    "expected": "FixedWindowLimiter never resets its counter when windowMs elapses, so after the first 100 requests admit rejects everything permanently. Reset count when a new window starts.",
+    "adjudication_notes": [
+      "Synthetic example PR for the test suite; the SHAs and PR URL are placeholders.",
+      "Both files are supplied in full, including the caller that exposes the defect."
+    ],
+    "buggy_diff": "diff --git a/src/limits/fixed-window.ts b/src/limits/fixed-window.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/limits/fixed-window.ts\n@@ -0,0 +1,10 @@\n+export class FixedWindowLimiter {\n+  private count = 0;\n+  private windowStart = 0;\n+  constructor(private limit: number, private windowMs: number) {}\n+  allow(now: number): boolean {\n+    if (this.count >= this.limit) return false;\n+    this.count++;\n+    return true;\n+  }\n+}\ndiff --git a/src/limits/admit.ts b/src/limits/admit.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/limits/admit.ts\n@@ -0,0 +1,5 @@\n+import { FixedWindowLimiter } from \"./fixed-window\";\n+const perMinute = new FixedWindowLimiter(100, 60_000);\n+export function admit(now: number) {\n+  return perMinute.allow(now) ? \"accepted\" : \"rate-limited\";\n+}\n",
+    "fixed_diff": "diff --git a/src/limits/fixed-window.ts b/src/limits/fixed-window.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/limits/fixed-window.ts\n@@ -0,0 +1,14 @@\n+export class FixedWindowLimiter {\n+  private count = 0;\n+  private windowStart = 0;\n+  constructor(private limit: number, private windowMs: number) {}\n+  allow(now: number): boolean {\n+    if (now - this.windowStart >= this.windowMs) {\n+      this.windowStart = now;\n+      this.count = 0;\n+    }\n+    if (this.count >= this.limit) return false;\n+    this.count++;\n+    return true;\n+  }\n+}\ndiff --git a/src/limits/admit.ts b/src/limits/admit.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/limits/admit.ts\n@@ -0,0 +1,5 @@\n+import { FixedWindowLimiter } from \"./fixed-window\";\n+const perMinute = new FixedWindowLimiter(100, 60_000);\n+export function admit(now: number) {\n+  return perMinute.allow(now) ? \"accepted\" : \"rate-limited\";\n+}\n",
+    "buggy_judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "After the limit is reached once, admit keeps returning rate-limited even in later windows."
+          }
+        ]
+      },
+      "claims": "supported"
+    },
+    "fixed_judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "After the limit is reached once, admit keeps returning rate-limited even in later windows."
+          }
+        ]
+      },
+      "claims": "unsupported"
+    }
+  }
+]

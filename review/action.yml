@@ -1,0 +1,124 @@
+name: PR-Agent manual review
+description: >-
+  Run one PR-Agent review for an authorised `/review` comment, using the
+  repository's accepted or qualified reviewer. Call from an `issue_comment`
+  (`created`) workflow with `contents: read` and `pull-requests: write`.
+inputs:
+  openrouter-api-key:
+    description: OpenRouter API key.
+    required: true
+  github-token:
+    description: Token for the permission lookup, policy read and review comment.
+    default: ${{ github.token }}
+  config-dir:
+    description: Directory holding config.json and fixtures/, read from the trusted event commit.
+    default: .github/pr-review
+  max-call-usd:
+    description: Optional lower per-call ceiling (for example a repository variable).
+    default: ''
+  acknowledge:
+    description: Add an eyes reaction once the commenter is authorised.
+    default: 'false'
+  authorize-only:
+    description: >-
+      Only authorise (and optionally acknowledge), then stop. Use in a
+      secret-free job before an approval-gated environment job, which calls the
+      action again in full and so re-checks the commenter after approval.
+    default: 'false'
+outputs:
+  allowed:
+    description: Whether the comment is an authorised review request.
+    value: ${{ steps.authorize.outputs.allowed }}
+  model:
+    description: The reviewer that ran, or empty when no review ran.
+    value: ${{ steps.select.outputs.model }}
+runs:
+  using: composite
+  steps:
+    # Precedes any checkout: no repository or comment code executes.
+    - name: Check comment author's repository permission
+      id: authorize
+      uses: actions/github-script@v8
+      env:
+        PR_REVIEW_LIB: ${{ github.action_path }}/../lib
+        ACKNOWLEDGE: ${{ inputs.acknowledge }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+          const lib = (f) => pathToFileURL(path.join(process.env.PR_REVIEW_LIB, f)).href;
+          const { authorize } = await import(lib('authorize.mjs'));
+          await authorize({ context, github, core, acknowledge: process.env.ACKNOWLEDGE === 'true' });
+
+    # Only the repository's config and fixtures, at the default-branch event
+    # commit; never PR code. Kept out of the caller's own workspace files.
+    - name: Checkout trusted repository config
+      if: steps.authorize.outputs.allowed == 'true' && inputs.authorize-only != 'true'
+      uses: actions/checkout@v5
+      with:
+        ref: ${{ github.sha }}
+        path: .pr-review/trusted
+        persist-credentials: false
+        sparse-checkout: ${{ inputs.config-dir }}
+        sparse-checkout-cone-mode: false
+
+    - name: Load accepted baseline or the period's qualified reviewer
+      id: select
+      if: steps.authorize.outputs.allowed == 'true' && inputs.authorize-only != 'true'
+      uses: actions/github-script@v8
+      env:
+        PR_REVIEW_LIB: ${{ github.action_path }}/../lib
+        PR_REVIEW_CONFIG: .pr-review/trusted/${{ inputs.config-dir }}/config.json
+        PR_REVIEW_MAX_CALL_USD: ${{ inputs.max-call-usd }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const { pathToFileURL } = require('node:url');
+          const path = require('node:path');
+          const lib = (f) => pathToFileURL(path.join(process.env.PR_REVIEW_LIB, f)).href;
+          try {
+            const { failureReason } = await import(lib('model-catalog.mjs'));
+            try {
+              const { loadReviewer } = await import(lib('policy.mjs'));
+              await loadReviewer({ github, context, core });
+            } catch (error) {
+              core.setFailed(`${failureReason(error)} No PR-Agent review was invoked.`);
+            }
+          } catch (error) {
+            core.setFailed(`PR-review config invalid: ${error.message}. No PR-Agent review was invoked.`);
+          }
+
+    # PR-Agent reads PR contents via GitHub, never executes them.
+    - name: Review with PR-Agent through OpenRouter
+      if: steps.authorize.outputs.allowed == 'true' && inputs.authorize-only != 'true' && steps.select.outputs.model != ''
+      uses: The-PR-Agent/pr-agent@v0.46.0
+      env:
+        CONFIG__OUTPUT_RUN_DETAILS: 'true'
+        CONFIG__FALLBACK_MODELS: '[]'
+        CONFIG__MODEL: ${{ steps.select.outputs.model }}
+        CONFIG__CUSTOM_MODEL_MAX_TOKENS: ${{ steps.select.outputs.input_tokens }}
+        CONFIG__MAX_MODEL_TOKENS: ${{ steps.select.outputs.input_tokens }}
+        CONFIG__CUSTOM_REASONING_MODEL: ${{ steps.select.outputs.custom_reasoning_model }}
+        # Reasoning follows the selected reviewer: the baseline's configured
+        # setting, or a qualified replacement's evaluated profile.
+        OPENROUTER__REASONING_EFFORT: ${{ steps.select.outputs.reasoning_effort }}
+        OPENROUTER__REASONING_MAX_TOKENS: ${{ steps.select.outputs.reasoning_tokens }}
+        OPENROUTER__MAX_TOKENS: ${{ steps.select.outputs.output_tokens }}
+        CONFIG__MAX_OUTPUT_TOKENS: ${{ steps.select.outputs.output_tokens }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        # Keep deployment boundaries outside repository/PR configuration.
+        CONFIG__USE_GLOBAL_SETTINGS_FILE: 'false'
+        CONFIG__ENABLE_PER_DIRECTORY_SETTINGS: 'false'
+        CONFIG__ENABLE_AUTO_APPROVAL: 'false'
+        # Native v0.46.0 control: inference failure must fail the action.
+        CONFIG__PROPAGATE_TOOL_ERRORS: 'true'
+        CONFIG__NUM_RETRIES: '0'
+        CONFIG__RETRY_SAME_MODEL_ON_TIMEOUT: 'false'
+        GITHUB_ACTION_CONFIG.AUTO_REVIEW: 'false'
+        GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: 'false'
+        GITHUB_ACTION_CONFIG.AUTO_IMPROVE: 'false'
+        GITHUB_ACTION_CONFIG.HANDLE_PUSH_TRIGGER: 'false'
+        GITHUB_ACTION_CONFIG.REVIEW_COMMANDS: '[]'
+        MODEL_ROUTING__ENABLE: 'false'

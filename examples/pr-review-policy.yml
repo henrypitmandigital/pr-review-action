@@ -1,0 +1,43 @@
+# .github/workflows/pr-review-policy.yml
+name: Fortnightly reviewer research
+
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+    inputs:
+      resume_run_id:
+        description: Original cycle claim id; only a failed run before inference may resume
+        required: false
+        type: string
+  # Exact /review-policy or /review-policy-resume <run id> PR comments.
+  issue_comment:
+    types: [created]
+
+permissions: {}
+concurrency:
+  group: pr-review-policy-renewal
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    # Cheap pre-filter only; the action authorises the exact trigger and requester.
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request &&
+        startsWith(github.event.comment.body, '/review-policy') &&
+        github.event.comment.user.type == 'User'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: write
+      actions: read # verifies a failed run before resuming its claim
+    steps:
+      - uses: OWNER/pr-review/renew@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          typesafe-api-key: ${{ secrets.TYPESAFE_API_KEY }}
+          resume-run-id: ${{ inputs.resume_run_id }}
+          # Empty uses config.json max_call_usd; a value can only lower it.
+          max-call-usd: ${{ vars.PR_REVIEW_MAX_CALL_USD }}

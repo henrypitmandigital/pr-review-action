@@ -1,0 +1,12 @@
+{
+  "name": "pr-review",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "PR_REVIEW_CONFIG=test/example/config.json node --test --test-concurrency=1 lib/*.checks.mjs && PYTHONDONTWRITEBYTECODE=1 python3 lib/observe_review_checks.py",
+    "lint": "biome check ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.15"
+  }
+}

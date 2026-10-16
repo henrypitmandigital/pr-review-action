@@ -1,0 +1,74 @@
+[
+  {
+    "id": "ttl-cache-buggy",
+    "diff": "diff --git a/src/cache/ttl-cache.ts b/src/cache/ttl-cache.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/cache/ttl-cache.ts\n@@ -0,0 +1,10 @@\n+export type Entry<V> = { value: V; expiresAt: number };\n+export class TtlCache<V> {\n+  private entries = new Map<string, Entry<V>>();\n+  set(key: string, value: V, ttlMs: number, now: number) {\n+    this.entries.set(key, { value, expiresAt: now + ttlMs });\n+  }\n+  get(key: string, now: number): V | undefined {\n+    return this.entries.get(key)?.value;\n+  }\n+}\ndiff --git a/src/cache/token-store.ts b/src/cache/token-store.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/cache/token-store.ts\n@@ -0,0 +1,8 @@\n+import { TtlCache } from \"./ttl-cache\";\n+const tokens = new TtlCache<string>();\n+export function rememberToken(user: string, token: string, now: number) {\n+  tokens.set(user, token, 60_000, now);\n+}\n+export function currentToken(user: string, now: number) {\n+  return tokens.get(user, now);\n+}\n",
+    "expected": "TtlCache.get ignores expiresAt, so expired values are returned forever. Compare expiresAt with now and evict stale entries before returning.",
+    "adjudication_notes": [
+      "Synthetic minimal example for the test suite. All referenced types and callers are included in the diff; nothing executes."
+    ],
+    "judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "TtlCache.get returns entries after expiresAt, so currentToken keeps serving an expired token."
+          }
+        ]
+      },
+      "claims": "supported"
+    }
+  },
+  {
+    "id": "ttl-cache-fixed",
+    "diff": "diff --git a/src/cache/ttl-cache.ts b/src/cache/ttl-cache.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/cache/ttl-cache.ts\n@@ -0,0 +1,15 @@\n+export type Entry<V> = { value: V; expiresAt: number };\n+export class TtlCache<V> {\n+  private entries = new Map<string, Entry<V>>();\n+  set(key: string, value: V, ttlMs: number, now: number) {\n+    this.entries.set(key, { value, expiresAt: now + ttlMs });\n+  }\n+  get(key: string, now: number): V | undefined {\n+    const entry = this.entries.get(key);\n+    if (!entry || entry.expiresAt <= now) {\n+      this.entries.delete(key);\n+      return undefined;\n+    }\n+    return entry.value;\n+  }\n+}\ndiff --git a/src/cache/token-store.ts b/src/cache/token-store.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/cache/token-store.ts\n@@ -0,0 +1,8 @@\n+import { TtlCache } from \"./ttl-cache\";\n+const tokens = new TtlCache<string>();\n+export function rememberToken(user: string, token: string, now: number) {\n+  tokens.set(user, token, 60_000, now);\n+}\n+export function currentToken(user: string, now: number) {\n+  return tokens.get(user, now);\n+}\n",
+    "expected": null,
+    "adjudication_notes": [
+      "Synthetic minimal example for the test suite. All referenced types and callers are included in the diff; nothing executes."
+    ],
+    "judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "TtlCache.get returns entries after expiresAt, so currentToken keeps serving an expired token."
+          }
+        ]
+      },
+      "claims": "unsupported"
+    }
+  },
+  {
+    "id": "retry-result-buggy",
+    "diff": "diff --git a/src/net/retry.ts b/src/net/retry.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/net/retry.ts\n@@ -0,0 +1,10 @@\n+export async function withRetry<T>(run: () => Promise<T>, attempts: number): Promise<T | undefined> {\n+  for (let i = 0; i < attempts; i++) {\n+    try {\n+      return await run();\n+    } catch {\n+      // try again\n+    }\n+  }\n+  return undefined;\n+}\ndiff --git a/src/billing/save-invoice.ts b/src/billing/save-invoice.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/billing/save-invoice.ts\n@@ -0,0 +1,5 @@\n+import { withRetry } from \"./retry\";\n+export async function saveInvoice(id: string, put: (id: string) => Promise<void>) {\n+  await withRetry(() => put(id), 3);\n+  return { saved: true, id };\n+}\n",
+    "expected": "withRetry resolves undefined when every attempt fails, so callers such as saveInvoice treat a failed write as success. Rethrow the last error once attempts are exhausted.",
+    "adjudication_notes": [
+      "Synthetic minimal example for the test suite. All referenced types and callers are included in the diff; nothing executes."
+    ],
+    "judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "withRetry swallows the final error and resolves undefined, so saveInvoice reports saved: true after every attempt failed."
+          }
+        ]
+      },
+      "claims": "supported"
+    }
+  },
+  {
+    "id": "retry-result-fixed",
+    "diff": "diff --git a/src/net/retry.ts b/src/net/retry.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/net/retry.ts\n@@ -0,0 +1,11 @@\n+export async function withRetry<T>(run: () => Promise<T>, attempts: number): Promise<T> {\n+  let last: unknown = new Error(\"withRetry needs at least one attempt\");\n+  for (let i = 0; i < attempts; i++) {\n+    try {\n+      return await run();\n+    } catch (error) {\n+      last = error;\n+    }\n+  }\n+  throw last;\n+}\ndiff --git a/src/billing/save-invoice.ts b/src/billing/save-invoice.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/billing/save-invoice.ts\n@@ -0,0 +1,5 @@\n+import { withRetry } from \"./retry\";\n+export async function saveInvoice(id: string, put: (id: string) => Promise<void>) {\n+  await withRetry(() => put(id), 3);\n+  return { saved: true, id };\n+}\n",
+    "expected": null,
+    "adjudication_notes": [
+      "Synthetic minimal example for the test suite. All referenced types and callers are included in the diff; nothing executes."
+    ],
+    "judge_control": {
+      "review": {
+        "key_issues_to_review": [
+          {
+            "issue": "withRetry swallows the final error and resolves undefined, so saveInvoice reports saved: true after every attempt failed."
+          }
+        ]
+      },
+      "claims": "unsupported"
+    }
+  }
+]

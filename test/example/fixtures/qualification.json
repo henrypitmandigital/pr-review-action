@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "repository": "example-org/example-repo",
+  "ready": false,
+  "reason": "Example labels are synthetic and have not been independently adjudicated. Automatic replacement is disabled.",
+  "required_for_ready": [
+    "Independent adjudication of each buggy/fixed label and judge control",
+    "Record source SHA, paths and linked regression proof",
+    "Run native PR-Agent and typed grading under an approved allowance"
+  ]
+}

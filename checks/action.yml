@@ -1,0 +1,80 @@
+name: PR-review configuration checks
+description: >-
+  Validate a pull request's PR-review config, fixtures and .pr_agent.toml
+  against the pinned PR-Agent source, and record a free catalog price plan.
+  Uses no secrets and makes no paid calls; safe on pull_request.
+inputs:
+  config-dir:
+    description: Directory holding config.json and fixtures/.
+    default: .github/pr-review
+  max-call-usd:
+    description: Optional lower per-call ceiling (for example a repository variable).
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Checkout pull request config
+      uses: actions/checkout@v5
+      with:
+        path: .pr-review/head
+        persist-credentials: false
+        sparse-checkout: |
+          ${{ inputs.config-dir }}
+          .pr_agent.toml
+        sparse-checkout-cone-mode: false
+
+    - name: Validate config and representative suite
+      shell: bash
+      working-directory: ${{ github.action_path }}/../lib
+      env:
+        PR_REVIEW_CONFIG: ${{ github.workspace }}/.pr-review/head/${{ inputs.config-dir }}/config.json
+      run: |
+        node --input-type=module -e '
+          const { CONFIG } = await import("./config.mjs");
+          const { loadSuite } = await import("./suite.mjs");
+          const suite = await loadSuite();
+          if (CONFIG.repository !== process.env.GITHUB_REPOSITORY)
+            throw new Error(`config repository ${CONFIG.repository} is not ${process.env.GITHUB_REPOSITORY}`);
+          console.log(`Config valid; suite has ${suite.cases.length} cases, ready=${suite.ready}.`);
+        '
+
+    - name: Pinned PR-Agent source version
+      id: pins
+      shell: bash
+      working-directory: ${{ github.action_path }}/../lib
+      env:
+        PR_REVIEW_CONFIG: ${{ github.workspace }}/.pr-review/head/${{ inputs.config-dir }}/config.json
+      run: node --input-type=module -e 'const { SOURCE_SHA } = await import("./gate.mjs"); console.log(`source_sha=${SOURCE_SHA}`)' >> "$GITHUB_OUTPUT"
+
+    - name: Checkout native compatibility source
+      uses: actions/checkout@v5
+      with:
+        repository: The-PR-Agent/pr-agent
+        ref: ${{ steps.pins.outputs.source_sha }}
+        path: .pr-review/pr-agent
+        persist-credentials: false
+
+    - name: Validate .pr_agent.toml and native PR-Agent controls
+      shell: bash
+      run: >-
+        PYTHONDONTWRITEBYTECODE=1 python3 "$GITHUB_ACTION_PATH/../lib/compatibility.py"
+        .pr-review/pr-agent .pr-review/head/.pr_agent.toml
+        ".pr-review/head/$CONFIG_DIR/config.json"
+      env:
+        CONFIG_DIR: ${{ inputs.config-dir }}
+
+    - name: Fresh free catalog and price plan
+      shell: bash
+      env:
+        PR_REVIEW_CONFIG: ${{ github.workspace }}/.pr-review/head/${{ inputs.config-dir }}/config.json
+        PR_REVIEW_MAX_CALL_USD: ${{ inputs.max-call-usd }}
+      run: node "$GITHUB_ACTION_PATH/../lib/catalog-plan.mjs" "$RUNNER_TEMP/reviewer-catalog.json"
+
+    - name: Preserve catalog preflight
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: reviewer-catalog-${{ github.run_id }}
+        path: ${{ runner.temp }}/reviewer-catalog.json
+        if-no-files-found: ignore
+        retention-days: 30

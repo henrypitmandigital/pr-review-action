@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - run: npx biome check .
+      - run: npm test
+      - name: Checkout pinned PR-Agent source
+        uses: actions/checkout@v5
+        with:
+          repository: The-PR-Agent/pr-agent
+          ref: 1d01f24f455bb879c1d9c557ad7de3d72dcc7975
+          path: .pr-review/pr-agent
+          persist-credentials: false
+      - name: Compatibility against the pinned source
+        run: python3 lib/compatibility.py .pr-review/pr-agent test/example/pr_agent.toml test/example/config.json

@@ -1,0 +1,22 @@
+# Loaded by PR-Agent from the repository's default branch, not the PR head.
+[config]
+# Owner-accepted baseline; the workflow can override with a qualified class peer.
+model = "openrouter/deepseek/deepseek-v4.1-flash"
+fallback_models = [] # Never fall back to PR-Agent's default direct OpenAI model.
+custom_model_max_tokens = 512000
+max_model_tokens = 512000
+max_output_tokens = 8192
+# Include the actual model, token usage, elapsed time and AI calls in reviews.
+output_run_details = true
+
+[pr_reviewer]
+# Review comments only; no label management or linked-ticket analysis.
+enable_review_labels_security = false
+enable_review_labels_effort = false
+require_ticket_analysis_review = false
+
+[openrouter]
+# The workflow sets reasoning per selected reviewer: off for the DeepSeek
+# baseline, which ignored a 2,048 budget and left the review empty.
+reasoning_max_tokens = 0
+max_tokens = 8192
